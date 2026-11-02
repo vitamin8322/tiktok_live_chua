@@ -209,6 +209,33 @@
     img.src = url;
   });
 
+  function renderAmbientWalkers() {
+    const layer = document.getElementById('ambientWalkerLayer');
+    if (!layer) return;
+    const walkers = [
+      { sideOffset: '-110px', delay: '-2s', duration: '13s' },
+      { sideOffset: '110px', delay: '-5s', duration: '15s' },
+      { sideOffset: '-170px', delay: '-8s', duration: '14s' },
+      { sideOffset: '170px', delay: '-11s', duration: '16s' }
+    ];
+    layer.innerHTML = walkers.map((walker, idx) => `
+      <div class="ambient-walker" style="--side-offset:${walker.sideOffset}; animation-delay:${walker.delay}; animation-duration:${walker.duration};">
+        <img src="${SPRITE_FRAMES.walk1}" alt="" />
+      </div>
+    `).join('');
+
+    layer.querySelectorAll('.ambient-walker img').forEach((img, idx) => {
+      let frame = idx % 2;
+      const step = () => {
+        frame = 1 - frame;
+        img.src = frame ? SPRITE_FRAMES.walk2 : SPRITE_FRAMES.walk1;
+        setTimeout(step, 210 + idx * 30);
+      };
+      setTimeout(step, idx * 110);
+    });
+  }
+  renderAmbientWalkers();
+
   function pulseHallBowing() {
     if (!congregationHall) return;
     const seats = congregationHall.querySelectorAll('.hall-seat');
@@ -446,6 +473,8 @@
 
   function formatEventSummary(ev) {
     switch (ev.type) {
+      case 'viewerJoin':
+        return `👋 <strong>${escapeHtml(ev.user)}</strong> vừa vào xem Live`;
       case 'burnIncense':
         return `🔥 <strong>${escapeHtml(ev.user)}</strong> dâng ${ev.count} nén nhang (+${ev.merit} CĐ)`;
       case 'strikeWoodenFish':
@@ -476,6 +505,11 @@
     }
 
     switch (ev.type) {
+      case 'viewerJoin': {
+        animateWalkerOnCarpet(ev.user, ev.avatar, '👋 Vừa vào xem Live', 'Chào mừng thí chủ đến Chánh Điện');
+        break;
+      }
+
       case 'burnIncense': {
         audio.playIncenseChime();
         particles.spawnIncenseBurst(540, 895);
@@ -613,6 +647,39 @@
   // 8. Kết nối JSON-RPC 2.0 WebSocket & Gửi Lệnh RPC
   let ws = null;
   let rpcId = 1;
+  const IDLE_PROMPT_MIN_MS = 10000;
+  const IDLE_PROMPT_MAX_MS = 15000;
+  let liveRoomConnected = false;
+  let nextIdlePromptAt = Date.now() + IDLE_PROMPT_MIN_MS + Math.random() * (IDLE_PROMPT_MAX_MS - IDLE_PROMPT_MIN_MS);
+  const IDLE_PROMPTS = [
+    'Thí chủ muốn gửi lời cầu chúc nào cho gia đình? Hãy để lại đôi dòng bình an trong phần bình luận nhé.',
+    'Xin mời thí chủ viết điều mình mong cầu. Chúng con sẽ thành tâm gửi lời chúc lành đến mọi người.',
+    'Hôm nay thí chủ muốn cầu bình an, sức khỏe hay công việc hanh thông? Hãy chia sẻ cùng Chánh Điện nhé.',
+    'Nếu đang nhớ đến người thân, thí chủ có thể để lại lời cầu chúc dành cho gia đình mình.',
+    'Một lời chúc lành trao đi, niềm an vui ở lại. Thí chủ hãy gửi lời chúc đến mọi người trong phòng Live nhé.',
+    'Thí chủ đang xem từ tỉnh thành nào? Hãy để lại tên địa phương để chúng con gửi lời chào hữu duyên.',
+    'Mời thí chủ cùng niệm một câu Nam mô A Di Đà Phật trong phần bình luận.',
+    'Nếu thấy buổi Live mang lại chút an yên, thí chủ hoan hỷ thả tim để lan tỏa duyên lành nhé.',
+    'Mỗi lượt tương tác giúp buổi Live được lan tỏa đến nhiều người hơn. Cảm ơn thí chủ đã đồng hành.',
+    'Thí chủ hãy chia sẻ buổi Live đến người thân đang cần một phút lắng lòng và bình an.',
+    'Nếu muốn gặp lại Chánh Điện trong những buổi sau, thí chủ hoan hỷ theo dõi kênh nhé.',
+    'Thí chủ có thể mời một người bạn cùng vào nghe lời kinh và gửi lời chúc lành.',
+    'Thí chủ muốn dâng hương cầu bình an? Hãy bình luận thắp hương để cùng tham gia nghi thức nhé.',
+    'Muốn gửi một lời cầu nguyện lên hoa đăng, thí chủ hãy bình luận điều mình mong ước.',
+    'Thí chủ muốn xin một quẻ đầu ngày? Hãy bình luận xin xăm để bắt đầu gieo quẻ.',
+    'Mời thí chủ cùng lắng nghe tiếng chuông, thả lỏng tâm mình và dành một phút an yên.',
+    'Ai muốn nghe tiếng mõ, hãy để lại lời chúc bình an cho gia đình trong phần bình luận nhé.'
+  ];
+
+  function maybeSpeakIdlePrompt() {
+    if (!liveRoomConnected || !audio.ttsEnabled || audio.ttsPlaying || audio.ttsQueue.length > 0) return;
+    const now = Date.now();
+    if (now < nextIdlePromptAt) return;
+    const prompt = IDLE_PROMPTS[Math.floor(Math.random() * IDLE_PROMPTS.length)];
+    audio.enqueueTts(prompt, { voice: audio.ttsVoice || 'maichi' });
+    nextIdlePromptAt = now + IDLE_PROMPT_MIN_MS + Math.random() * (IDLE_PROMPT_MAX_MS - IDLE_PROMPT_MIN_MS);
+  }
+  setInterval(maybeSpeakIdlePrompt, 1000);
 
   function connectWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -622,11 +689,19 @@
       try {
         const msg = JSON.parse(event.data);
         if (msg.method === 'temple.state') {
+          const connected = msg.params?.tiktok?.connected === true;
+          if (connected && !liveRoomConnected) {
+            nextIdlePromptAt = Date.now() + IDLE_PROMPT_MIN_MS + Math.random() * (IDLE_PROMPT_MAX_MS - IDLE_PROMPT_MIN_MS);
+          }
+          liveRoomConnected = connected;
           updateUIState(msg.params);
         } else if (msg.method === 'temple.event') {
+          nextIdlePromptAt = Date.now() + IDLE_PROMPT_MIN_MS + Math.random() * (IDLE_PROMPT_MAX_MS - IDLE_PROMPT_MIN_MS);
+          if (msg.params?.state) liveRoomConnected = msg.params.state.tiktok?.connected === true;
           if (msg.params?.state) updateUIState(msg.params.state);
           if (msg.params?.event) triggerRitualVisuals(msg.params.event);
         } else if (msg.method === 'tts.play') {
+          nextIdlePromptAt = Date.now() + IDLE_PROMPT_MIN_MS + Math.random() * (IDLE_PROMPT_MAX_MS - IDLE_PROMPT_MIN_MS);
           if (msg.params?.url) {
             audio.enqueueTts(msg.params.text || 'Nam mô A Di Đà Phật', {
               voice: msg.params.voice || 'maichi',

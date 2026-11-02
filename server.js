@@ -119,9 +119,18 @@ class ZeroTTSManager {
   }
 
   resolvePythonBin() {
-    const venvPy = path.join(__dirname, '.venv', 'bin', 'python');
-    if (fs.existsSync(venvPy)) return venvPy;
-    return 'python3';
+    const candidates = process.platform === 'win32'
+      ? [
+          path.join(__dirname, '.venv', 'Scripts', 'python.exe'),
+          path.join(__dirname, '.venv', 'bin', 'python')
+        ]
+      : [
+          path.join(__dirname, '.venv', 'bin', 'python'),
+          path.join(__dirname, '.venv', 'Scripts', 'python.exe')
+        ];
+    const venvPy = candidates.find((candidate) => fs.existsSync(candidate));
+    if (venvPy) return venvPy;
+    return process.platform === 'win32' ? 'python' : 'python3';
   }
 
   startWorker() {
@@ -133,6 +142,18 @@ class ZeroTTSManager {
     this.proc = spawn(pyBin, [scriptPath], {
       cwd: __dirname,
       stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    this.proc.on('error', (err) => {
+      this.ready = false;
+      this.status = 'error';
+      console.error(`[ZeroTTS] KhÃ´ng thá»ƒ khá»Ÿi cháº¡y Python worker (${pyBin}): ${err.message}`);
+      broadcastNotification('tts.status', this.getStatus());
+      for (const [, item] of this.pending) {
+        clearTimeout(item.timer);
+        item.resolve({ ok: false, error: `Cannot start Python worker: ${err.message}` });
+      }
+      this.pending.clear();
     });
 
     this.proc.stdout.on('data', (chunk) => {
@@ -430,6 +451,22 @@ function pushEventLog(evt) {
   return entry;
 }
 
+function registerViewerJoin({ user, uniqueId, avatar } = {}) {
+  const devotee = recordDevotee(user, uniqueId, avatar, 0, 0, 0, 'Đã vào xem Live');
+  const event = pushEventLog({
+    type: 'viewerJoin',
+    user: devotee.name,
+    uniqueId: devotee.uniqueId,
+    avatar: devotee.avatar,
+    merit: 0,
+    ttsText: `Cảm ơn thí chủ ${devotee.name} đã vào xem Live. Nam mô A Di Đà Phật.`,
+    ttsVoice: state.settings.ttsVoice || 'maichi'
+  });
+  saveState();
+  broadcastNotification('temple.event', { event, state: getPublicState() });
+  return { event, state: getPublicState() };
+}
+
 function getPublicState() {
   return {
     totalIncense: state.totalIncense,
@@ -496,6 +533,7 @@ const Rituals = {
     state.woodenFishHits += count;
     const devotee = recordDevotee(user, uniqueId, avatar, merit, 0, 0);
 
+    const ttsText = params.ttsText || `Cảm ơn thí chủ ${devotee.name} đã gõ mõ ${count} nhịp, tích thêm ${merit} điểm công đức.`;
     const event = pushEventLog({
       type: 'strikeWoodenFish',
       user: devotee.name,
@@ -503,7 +541,8 @@ const Rituals = {
       avatar: devotee.avatar,
       count,
       merit,
-      ttsText: params.ttsText || ''
+      ttsText,
+      ttsVoice: state.settings.ttsVoice || 'maichi'
     });
 
     saveState();
@@ -522,9 +561,9 @@ const Rituals = {
     state.bellRings += count;
     const devotee = recordDevotee(user, uniqueId, avatar, merit, 0, 0, wish);
 
-    const ttsText = params.readTts
+    const ttsText = params.ttsText || (params.readTts
       ? `Thí chủ ${devotee.name} thỉnh Đại Hồng Chung cầu nguyện: ${wish}.`
-      : '';
+      : '');
 
     const event = pushEventLog({
       type: 'ringBell',
@@ -790,6 +829,21 @@ function parseViewerComment(commentText, user, uniqueId, avatar) {
 }
 
 const giftComboTracker = new Map();
+const liveThanksCooldown = new Map();
+
+function canSpeakLiveThanks(uniqueId, user, action, cooldownMs = 10000) {
+  const key = `${uniqueId || user || 'viewer'}:${action}`;
+  const now = Date.now();
+  const previous = liveThanksCooldown.get(key) || 0;
+  if (now - previous < cooldownMs) return false;
+  liveThanksCooldown.set(key, now);
+  if (liveThanksCooldown.size > 1000) {
+    for (const [oldKey, timestamp] of liveThanksCooldown) {
+      if (now - timestamp > cooldownMs * 3) liveThanksCooldown.delete(oldKey);
+    }
+  }
+  return true;
+}
 
 async function resolveTikTokUsername(rawInput) {
   let input = String(rawInput || '').trim();
@@ -890,9 +944,7 @@ async function connectTikTokLive(usernameOrUrl) {
   });
 
   tiktokConn.on(WebcastEvent.MEMBER, (data) => {
-    const { user, uniqueId, avatar } = extractUserFromEvent(data);
-    recordDevotee(user, uniqueId, avatar, 1, 0, 0, 'Đã vào Chánh Điện lễ Phật');
-    broadcastNotification('temple.state', getPublicState());
+    registerViewerJoin(extractUserFromEvent(data));
   });
 
   tiktokConn.on(WebcastEvent.CHAT, (data) => {
@@ -905,28 +957,35 @@ async function connectTikTokLive(usernameOrUrl) {
   tiktokConn.on(WebcastEvent.LIKE, (data) => {
     const { user, uniqueId, avatar } = extractUserFromEvent(data);
     const likeCount = Math.min(15, Math.max(1, Number(data?.count ?? data?.likeCount ?? 1)));
-    Rituals.strikeWoodenFish({ user, uniqueId, avatar, count: likeCount });
+    const ttsText = canSpeakLiveThanks(uniqueId, user, 'like')
+      ? `Cảm ơn thí chủ ${sanitizeUserName(user)} đã thả tim, hồi hướng ${likeCount} công đức.`
+      : '';
+    Rituals.strikeWoodenFish({ user, uniqueId, avatar, count: likeCount, ttsText });
   });
 
-  const handleSocialEvent = (data) => {
+  const handleSocialEvent = (data, action) => {
     const { user, uniqueId, avatar } = extractUserFromEvent(data);
+    if (!canSpeakLiveThanks(uniqueId, user, action, 8000)) return;
+    const ttsText = action === 'follow'
+      ? `Cảm ơn thí chủ ${sanitizeUserName(user)} đã theo dõi kênh.`
+      : `Cảm ơn thí chủ ${sanitizeUserName(user)} đã chia sẻ buổi Live.`;
     Rituals.ringBell({
       user,
       uniqueId,
       avatar,
       count: 1,
       wish: 'Hữu duyên tương ngộ nơi cửa Phật, cầu bình an may mắn',
-      readTts: false
+      readTts: false,
+      ttsText
     });
   };
-  tiktokConn.on(WebcastEvent.FOLLOW, handleSocialEvent);
-  tiktokConn.on(WebcastEvent.SHARE, handleSocialEvent);
+  tiktokConn.on(WebcastEvent.FOLLOW, (data) => handleSocialEvent(data, 'follow'));
+  tiktokConn.on(WebcastEvent.SHARE, (data) => handleSocialEvent(data, 'share'));
   tiktokConn.on(WebcastEvent.SOCIAL, (data) => {
     const action = String(data?.action || '');
     const disp = String(data?.common?.displayText?.displayType || data?.displayType || '').toLowerCase();
-    if (action === '1' || action === '3' || disp.includes('follow') || disp.includes('share')) {
-      handleSocialEvent(data);
-    }
+    if (action === '1' || disp.includes('follow')) handleSocialEvent(data, 'follow');
+    else if (action === '3' || disp.includes('share')) handleSocialEvent(data, 'share');
   });
 
   tiktokConn.on(WebcastEvent.GIFT, (data) => {
@@ -1063,6 +1122,8 @@ async function handleRpcCall(method, params = {}) {
       return Rituals.resetMerit();
     case 'temple.comment':
       return parseViewerComment(params.comment, params.user, params.uniqueId, params.avatar);
+    case 'live.simulateViewerJoin':
+      return registerViewerJoin(params);
     case 'temple.speak': {
       const res = await zeroTts.synthesize(params.text, params.voice || 'maichi');
       if (res.ok && params.broadcast !== false) {

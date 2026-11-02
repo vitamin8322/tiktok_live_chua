@@ -644,6 +644,42 @@ body.obs-mode .stage-wrapper {
   pointer-events: none;
 }
 
+/* Anonymous background procession, kept separate from real viewer events. */
+.ambient-walker-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 13;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ambient-walker {
+  position: absolute;
+  left: 540px;
+  top: 1665px;
+  width: 72px;
+  height: 136px;
+  will-change: transform;
+  animation: ambientWalkToSideRows 14s ease-in-out infinite;
+}
+
+.ambient-walker img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+@keyframes ambientWalkToSideRows {
+  0%, 100% { transform: translate3d(-50%, -100%, 0) scale(1); }
+  20%, 80% {
+    transform: translate3d(calc(-50% + var(--side-offset)), calc(-100% - 110px), 0) scale(0.96);
+  }
+  50% {
+    transform: translate3d(calc(-50% + var(--side-offset)), calc(-100% - 460px), 0) scale(0.8);
+  }
+}
+
 .carpet-walker {
   position: absolute;
   left: 540px;

@@ -113,6 +113,14 @@ def polish_waveform(wav: np.ndarray, sample_rate: int) -> np.ndarray:
 
 
 def main() -> None:
+    # Bun writes JSON to the worker pipe as UTF-8. On Windows, Python may
+    # otherwise decode redirected stdin using the active legacy code page
+    # (for example cp1252), corrupting Vietnamese before it reaches ZeroTTS.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+
     t0 = time.time()
     model_src = resolve_model_source()
     emit({"type": "status", "status": "loading", "model": model_src})
